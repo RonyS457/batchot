@@ -1,9 +1,13 @@
+require('dotenv').config();
+
 const express = require('express');
 const mongoose = require('mongoose');
 const cors = require('cors');
 const http = require('http');
 const io = require('socket.io');
 const rateLimit = require('express-rate-limit');
+const Message = require('./models/message');
+const User = require('./models/user');
 
 const app = express();
 const PORT = process.env.PORT || 4000;
@@ -14,29 +18,10 @@ const limiter = rateLimit({
   max: 100 // limit each IP to 100 requests per windowMs
 });
 
-// Message Schema with validation
-const messageSchema = new mongoose.Schema({
-  text: { 
-    type: String, 
-    required: [true, 'Message text is required'],
-    trim: true,
-    maxlength: [1000, 'Message cannot be longer than 1000 characters']
-  },
-  sender: { 
-    type: String, 
-    required: [true, 'Sender name is required'],
-    trim: true,
-    maxlength: [50, 'Sender name cannot be longer than 50 characters']
-  },
-  timestamp: { type: Date, default: Date.now }
-});
-
-const Message = mongoose.model('Message', messageSchema);
-
 // MongoDB Connection with error handling and retry logic
 const connectDB = async () => {
   try {
-    await mongoose.connect('mongodb://localhost/language_chatbot', {
+    await mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost/language_chatbot', {
       useNewUrlParser: true,
       useUnifiedTopology: true,
       serverSelectionTimeoutMS: 5000,
@@ -45,12 +30,9 @@ const connectDB = async () => {
     console.log('Connected to MongoDB');
   } catch (err) {
     console.error('MongoDB connection error:', err);
-    // Retry connection after 5 seconds
-    setTimeout(connectDB, 5000);
+    process.exit(1);
   }
 };
-
-connectDB();
 
 // Middleware
 app.use(cors({
@@ -68,9 +50,11 @@ const server = http.createServer(app);
 const socketIO = io(server, {
   cors: {
     origin: process.env.NODE_ENV === 'production' 
-      ? 'https://your-production-domain.com' 
+      ? process.env.CLIENT_URL 
       : 'http://localhost:3000',
-    methods: ['GET', 'POST']
+    methods: ['GET', 'POST'],
+    credentials: true,
+    allowedHeaders: ['Content-Type', 'Authorization']
   },
   pingTimeout: 60000,
   pingInterval: 25000
@@ -109,31 +93,31 @@ socketIO.on('connection', (socket) => {
 
   socket.on('sendMessage', async (message) => {
     try {
-      // Validate message
-      if (!message.text?.trim() || !message.sender?.trim()) {
-        throw new Error('Invalid message format');
-      }
-
-      // Sanitize input
-      const sanitizedMessage = {
+      validateMessageInput(message);
+      
+      // Process language and translations if available
+      const language = message.language || 'en';
+      
+      // Create and save the message with proper validation
+      const newMessage = new Message({
         text: message.text.trim(),
         sender: message.sender.trim(),
+        language,
         timestamp: new Date()
-      };
-
-      // Create and save new message
-      const newMessage = new Message(sanitizedMessage);
+      });
+      
       await newMessage.save();
-
-      // Broadcast message to all connected clients
+      
+      // Emit to all clients
       socketIO.emit('newMessage', newMessage);
     } catch (error) {
-      console.error('Error handling message:', error);
-      socket.emit('error', { 
-        message: error.message || 'Failed to process message',
-        details: process.env.NODE_ENV === 'development' ? error.stack : undefined
-      });
+      console.error('Error sending message:', error);
+      socket.emit('error', { message: error.message });
     }
+  });
+
+  socket.on('error', (error) => {
+    console.error('Socket error:', error);
   });
 });
 
@@ -174,6 +158,36 @@ process.on('unhandledRejection', (err) => {
   server.close(() => process.exit(1));
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+// Connect to MongoDB before starting the server
+connectDB().then(() => {
+  server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+}).catch(err => {
+  console.error('Failed to connect to MongoDB:', err);
+  process.exit(1);
 });
+
+const validateMessageInput = (message) => {
+  if (!message || typeof message !== 'object') {
+    throw new Error('Invalid message format');
+  }
+  
+  if (!message.text || typeof message.text !== 'string' || message.text.trim().length === 0) {
+    throw new Error('Message text is required');
+  }
+  
+  if (!message.sender || typeof message.sender !== 'string' || message.sender.trim().length === 0) {
+    throw new Error('Sender name is required');
+  }
+  
+  if (message.text.length > 1000) {
+    throw new Error('Message is too long (max 1000 characters)');
+  }
+  
+  if (message.sender.length > 50) {
+    throw new Error('Sender name is too long (max 50 characters)');
+  }
+  
+  return true;
+};

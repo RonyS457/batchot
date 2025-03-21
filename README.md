@@ -72,3 +72,29 @@ batchot/
 3. Commit your changes
 4. Push to the branch
 5. Create a new Pull Request 
+
+## API Endpoints
+
+POST /api/messages
+- Create a new message
+- Body: { text: string, sender: string }
+
+GET /api/messages
+- Retrieve message history
+- Query params: limit (optional)
+
+## WebSocket Events
+
+'connection'
+- Client connects to server
+
+'disconnect'
+- Client disconnects from server
+
+'sendMessage'
+- Client sends a message
+- Payload: { text: string, sender: string }
+
+'newMessage'
+- Server broadcasts new message
+- Payload: { text: string, sender: string, timestamp: Date } 
